@@ -1,3 +1,17 @@
+# Test New LLMs (CodeLlama, Llama2, etc.) 
+
+Notice you forked chat-ui. if you're trying to test other LLMs (codellama, wizardcoder, etc.) with it, I just wrote a [1-click proxy](https://github.com/BerriAI/litellm#openai-proxy-server) to translate openai calls to huggingface, anthropic, togetherai, etc. api calls.
+
+**code**
+```
+$ pip install litellm
+$ litellm --model huggingface/bigcode/starcoder
+#INFO:     Uvicorn running on http://0.0.0.0:8000
+$ aider --openai-api-base http://0.0.0.0:8000
+```
+
+I'd love to know if this solves a problem for you
+
 ---
 title: chat-ui
 emoji: 🔥
@@ -12,16 +26,17 @@ app_port: 3000
 
 # Chat UI
 
-![Chat UI repository thumbnail](https://huggingface.co/datasets/huggingface/documentation-images/raw/f038917dd40d711a72d654ab1abfc03ae9f177e6/chat-ui-repo-thumbnail.svg)
+![Chat UI repository thumbnail](https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/chatui-websearch.png)
 
 A chat interface using open source models, eg OpenAssistant or Llama. It is a SvelteKit app and it powers the [HuggingChat app on hf.co/chat](https://huggingface.co/chat).
 
 0. [No Setup Deploy](#no-setup-deploy)
 1. [Setup](#setup)
 2. [Launch](#launch)
-3. [Extra parameters](#extra-parameters)
-4. [Deploying to a HF Space](#deploying-to-a-hf-space)
-5. [Building](#building)
+3. [Web Search](#web-search)
+4. [Extra parameters](#extra-parameters)
+5. [Deploying to a HF Space](#deploying-to-a-hf-space)
+6. [Building](#building)
 
 ##  No Setup Deploy
 
@@ -69,6 +84,16 @@ After you're done with the `.env.local` file you can run Chat UI locally with:
 npm install
 npm run dev
 ```
+
+## Web Search
+
+Chat UI features a powerful Web Search feature. It works by:
+
+1. Generating an appropriate Google query from the user prompt.
+2. Performing Google search and extracting content from webpages.
+3. Creating embeddings from texts using [transformers.js](https://huggingface.co/docs/transformers.js). Specifically, using [Xenova/gte-small](https://huggingface.co/Xenova/gte-small) model.
+4. From these embeddings, find the ones that are closest to the user query using vector similarity search. Specifically, we use `inner product` distance.
+5. Get the corresponding texts to those closest embeddings and perform [Retrieval-Augmented Generation](https://huggingface.co/papers/2005.11401) (i.e. expand user prompt by adding those texts so that a LLM can use this information).
 
 ## Extra parameters
 
@@ -120,9 +145,8 @@ MODELS=`[
     "websiteUrl": "https://open-assistant.io",
     "userMessageToken": "<|prompter|>", # This does not need to be a token, can be any string
     "assistantMessageToken": "<|assistant|>", # This does not need to be a token, can be any string
-    "messageEndToken": "<|endoftext|>", # This does not need to be a token, can be any string
-    # "userMessageEndToken": "", # Applies only to user messages, messageEndToken has no effect if specified. Can be any string.
-    # "assistantMessageEndToken": "", # Applies only to assistant messages, messageEndToken has no effect if specified. Can be any string.
+    "userMessageEndToken": "<|endoftext|>", # Applies only to user messages. Can be any string.
+    "assistantMessageEndToken": "<|endoftext|>", # Applies only to assistant messages. Can be any string.
     "preprompt": "Below are a series of dialogues between various people and an AI assistant. The AI tries to be helpful, polite, honest, sophisticated, emotionally aware, and humble-but-knowledgeable. The assistant is happy to help with almost anything, and will do its best to understand exactly what is needed. It also tries to avoid giving false or misleading information, and it caveats when it isn't entirely sure about the right answer. That said, the assistant is practical and really does its best, and doesn't let caution get too much in the way of being useful.\n-----\n",
     "promptExamples": [
       {
@@ -152,7 +176,53 @@ MODELS=`[
 
 You can change things like the parameters, or customize the preprompt to better suit your needs. You can also add more models by adding more objects to the array, with different preprompts for example.
 
-### Running your own models using a custom endpoint
+#### Custom prompt templates:
+
+By default the prompt is constructed using `userMessageToken`, `assistantMessageToken`, `userMessageEndToken`, `assistantMessageEndToken`, `preprompt` parameters and a series of default templates.
+
+However, these templates can be modified by setting the `chatPromptTemplate` and `webSearchQueryPromptTemplate` parameters. Note that if WebSearch is not enabled, only `chatPromptTemplate` needs to be set. The template language is https://handlebarsjs.com. The templates have access to the model's prompt parameters (`preprompt`, etc.). However, if the templates are specified it is recommended to inline the prompt parameters, as using the references (`{{preprompt}}`) is deprecated.
+
+For example:
+
+```
+<System>You are an AI, called ChatAI.</System>
+{{#each messages}}
+  {{#ifUser}}<User>{{content}}</User>{{/ifUser}}
+  {{#ifAssistant}}<Assistant>{{content}}</Assistant>{{/ifAssistant}}
+{{/each}}
+<Assistant>
+```
+
+**chatPromptTemplate**
+
+When quering the model for a chat response, the `chatPromptTemplate` template is used. `messages` is an array of chat messages, it has the format `[{ content: string }, ...]`. To idenify if a message is a user message or an assistant message the `ifUser` and `ifAssistant` block helpers can be used.
+
+The following is the default `chatPromptTemplate`, although newlines and indentiation have been added for readability.
+
+```
+{{preprompt}}
+{{#each messages}}
+  {{#ifUser}}{{@root.userMessageToken}}{{content}}{{@root.userMessageEndToken}}{{/ifUser}}
+  {{#ifAssistant}}{{@root.assistantMessageToken}}{{content}}{{@root.assistantMessageEndToken}}{{/ifAssistant}}
+{{/each}}
+{{assistantMessageToken}}
+```
+
+**webSearchQueryPromptTemplate**
+
+When performing a websearch, the search query is constructed using the `webSearchQueryPromptTemplate` template. It is recommended that that the prompt instructs the chat model to only return a few keywords.
+
+The following is the default `webSearchQueryPromptTemplate`.
+
+```
+{{userMessageToken}}
+  My question is: {{message.content}}.
+  Based on the conversation history (my previous questions are: {{previousMessages}}), give me an appropriate query to answer my question for google search. You should not say more than query. You should not say any words except the query. For the context, today is {{currentDate}}
+{{userMessageEndToken}}
+{{assistantMessageToken}}
+```
+
+#### Running your own models using a custom endpoint
 
 If you want to, instead of hitting models on the Hugging Face Inference API, you can run your own models locally.
 

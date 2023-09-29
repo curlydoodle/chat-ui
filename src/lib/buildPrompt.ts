@@ -1,58 +1,50 @@
 import type { BackendModel } from "./server/models";
 import type { Message } from "./types/Message";
-import { collections } from "$lib/server/database";
-import { ObjectId } from "mongodb";
+import { format } from "date-fns";
+import type { WebSearch } from "./types/WebSearch";
 /**
  * Convert [{user: "assistant", content: "hi"}, {user: "user", content: "hello"}] to:
  *
  * <|assistant|>hi<|endoftext|><|prompter|>hello<|endoftext|><|assistant|>
  */
 
-export async function buildPrompt(
-	messages: Pick<Message, "from" | "content">[],
-	model: BackendModel,
-	webSearchId?: string
-): Promise<string> {
-	const userEndToken = model.userMessageEndToken ?? model.messageEndToken;
-	const assistantEndToken = model.assistantMessageEndToken ?? model.messageEndToken;
+interface buildPromptOptions {
+	messages: Pick<Message, "from" | "content">[];
+	model: BackendModel;
+	locals?: App.Locals;
+	webSearch?: WebSearch;
+	preprompt?: string;
+}
 
-	const prompt =
-		messages
-			.map((m) =>
-				m.from === "user"
-					? model.userMessageToken +
-					  m.content +
-					  (m.content.endsWith(userEndToken) ? "" : userEndToken)
-					: model.assistantMessageToken +
-					  m.content +
-					  (m.content.endsWith(assistantEndToken) ? "" : assistantEndToken)
-			)
-			.join("") + model.assistantMessageToken;
-
-	let webPrompt = "";
-
-	if (webSearchId) {
-		const webSearch = await collections.webSearches.findOne({
-			_id: new ObjectId(webSearchId),
-		});
-
-		if (!webSearch) throw new Error("Web search not found");
-
-		if (webSearch.summary) {
-			webPrompt =
-				model.assistantMessageToken +
-				`The following context was found while searching the internet: ${webSearch.summary}` +
-				model.assistantMessageEndToken;
-		}
+export async function buildPrompt({
+	messages,
+	model,
+	webSearch,
+	preprompt,
+}: buildPromptOptions): Promise<string> {
+	if (webSearch && webSearch.context) {
+		const messagesWithoutLastUsrMsg = messages.slice(0, -1);
+		const lastUserMsg = messages.slice(-1)[0];
+		const currentDate = format(new Date(), "MMMM d, yyyy");
+		messages = [
+			...messagesWithoutLastUsrMsg,
+			{
+				from: "user",
+				content: `Please answer my question "${lastUserMsg.content}" using the supplied context below (paragraphs from various websites). For the context, today is ${currentDate}: 
+				=====================
+				${webSearch.context}
+				=====================
+				So my question is "${lastUserMsg.content}"`,
+			},
+		];
 	}
-	const finalPrompt =
-		model.preprompt +
-		webPrompt +
-		prompt
+
+	return (
+		model
+			.chatPromptRender({ messages, preprompt })
+			// Not super precise, but it's truncated in the model's backend anyway
 			.split(" ")
 			.slice(-(model.parameters?.truncate ?? 0))
-			.join(" ");
-
-	// Not super precise, but it's truncated in the model's backend anyway
-	return finalPrompt;
+			.join(" ")
+	);
 }

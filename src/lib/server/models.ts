@@ -1,5 +1,9 @@
 import { HF_ACCESS_TOKEN, MODELS, OLD_MODELS } from "$env/static/private";
+import type { ChatTemplateInput, WebSearchQueryTemplateInput } from "$lib/types/Template";
+import { compileTemplate } from "$lib/utils/template";
 import { z } from "zod";
+
+type Optional<T, K extends keyof T> = Pick<Partial<T>, K> & Omit<T, K>;
 
 const sagemakerEndpoint = z.object({
 	host: z.literal("sagemaker"),
@@ -46,13 +50,32 @@ const modelsRaw = z
 			modelUrl: z.string().url().optional(),
 			datasetName: z.string().min(1).optional(),
 			datasetUrl: z.string().url().optional(),
-			userMessageToken: z.string(),
+			userMessageToken: z.string().default(""),
 			userMessageEndToken: z.string().default(""),
-			assistantMessageToken: z.string(),
+			assistantMessageToken: z.string().default(""),
 			assistantMessageEndToken: z.string().default(""),
 			messageEndToken: z.string().default(""),
 			preprompt: z.string().default(""),
 			prepromptUrl: z.string().url().optional(),
+			chatPromptTemplate: z
+				.string()
+				.default(
+					"{{preprompt}}" +
+						"{{#each messages}}" +
+						"{{#ifUser}}{{@root.userMessageToken}}{{content}}{{@root.userMessageEndToken}}{{/ifUser}}" +
+						"{{#ifAssistant}}{{@root.assistantMessageToken}}{{content}}{{@root.assistantMessageEndToken}}{{/ifAssistant}}" +
+						"{{/each}}" +
+						"{{assistantMessageToken}}"
+				),
+			webSearchQueryPromptTemplate: z
+				.string()
+				.default(
+					"{{userMessageToken}}" +
+						'My question is: "{{message.content}}". ' +
+						"Based on the conversation history (my previous questions are: {{previousMessages}}), give me an appropriate query to answer my question for google search. You should not say more than query. You should not say any words except the query. For the context, today is {{currentDate}}" +
+						"{{userMessageEndToken}}" +
+						"{{assistantMessageToken}}"
+				),
 			promptExamples: z
 				.array(
 					z.object({
@@ -80,6 +103,11 @@ export const models = await Promise.all(
 		...m,
 		userMessageEndToken: m?.userMessageEndToken || m?.messageEndToken,
 		assistantMessageEndToken: m?.assistantMessageEndToken || m?.messageEndToken,
+		chatPromptRender: compileTemplate<ChatTemplateInput>(m.chatPromptTemplate, m),
+		webSearchQueryPromptRender: compileTemplate<WebSearchQueryTemplateInput>(
+			m.webSearchQueryPromptTemplate,
+			m
+		),
 		id: m.id || m.name,
 		displayName: m.displayName || m.name,
 		preprompt: m.prepromptUrl ? await fetch(m.prepromptUrl).then((r) => r.text()) : m.preprompt,
@@ -100,7 +128,7 @@ export const oldModels = OLD_MODELS
 			.map((m) => ({ ...m, id: m.id || m.name, displayName: m.displayName || m.name }))
 	: [];
 
-export type BackendModel = (typeof models)[0];
+export type BackendModel = Optional<(typeof models)[0], "preprompt">;
 export type Endpoint = z.infer<typeof endpoint>;
 
 export const defaultModel = models[0];
